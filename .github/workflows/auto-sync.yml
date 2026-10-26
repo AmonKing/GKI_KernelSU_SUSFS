@@ -1,0 +1,56 @@
+name: Auto Sync Upstream
+
+# Daily: fast-forward main from WildKernels/GKI_KernelSU_SUSFS.
+# If upstream moved, dispatch a KernelSU-Next 6.1.x-android14 (lts) build
+# with commit_mode=latest (pershoot dev-susfs tip + susfs branch tip).
+
+on:
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+    steps:
+      - name: Fast-forward main from upstream
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO="${GITHUB_REPOSITORY}"
+          BEFORE="$(gh api "/repos/$REPO/commits/main" --jq .sha)"
+          gh api -X POST "/repos/$REPO/merge-upstream" -f branch=main \
+            --jq '"merge: " + .merge_type + " - " + .message'
+          AFTER="$(gh api "/repos/$REPO/commits/main" --jq .sha)"
+          echo "before=$BEFORE"
+          echo "after =$AFTER"
+          if [ "$BEFORE" != "$AFTER" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  rebuild:
+    needs: sync
+    if: needs.sync.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch kernel rebuild
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh workflow run main.yml --ref main \
+            -f kernel_build_version=6.1.x-android14 \
+            -f os_patch_level=lts \
+            -f root_flavor=KernelSU-Next \
+            -f commit_mode=latest
+          echo "kernel rebuild dispatched (6.1.x-android14 lts / KernelSU-Next / latest)"
